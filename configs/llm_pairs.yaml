@@ -1,0 +1,60 @@
+draft_models:
+  - Qwen/Qwen3.5-0.8B
+  - Qwen/Qwen3.5-2B
+  - Qwen/Qwen3.5-4B
+  - Qwen/Qwen3.5-9B
+
+target_models:
+  - Qwen/Qwen3.5-9B
+  - Qwen/Qwen3.5-27B
+  - Qwen/Qwen3-32B
+
+model_sizes_B:
+  Qwen/Qwen3.5-0.8B: 0.8
+  Qwen/Qwen3.5-2B: 2.0
+  Qwen/Qwen3.5-4B: 4.0
+  Qwen/Qwen3.5-9B: 9.0
+  Qwen/Qwen3.5-27B: 27.0
+  Qwen/Qwen3-32B: 32.0
+
+pairs:
+  - draft: Qwen/Qwen3.5-0.8B
+    target: Qwen/Qwen3.5-9B
+  - draft: Qwen/Qwen3.5-0.8B
+    target: Qwen/Qwen3.5-27B
+  - draft: Qwen/Qwen3.5-0.8B
+    target: Qwen/Qwen3-32B
+  - draft: Qwen/Qwen3.5-2B
+    target: Qwen/Qwen3.5-9B
+  - draft: Qwen/Qwen3.5-2B
+    target: Qwen/Qwen3.5-27B
+  - draft: Qwen/Qwen3.5-2B
+    target: Qwen/Qwen3-32B
+  - draft: Qwen/Qwen3.5-4B
+    target: Qwen/Qwen3.5-9B
+  - draft: Qwen/Qwen3.5-4B
+    target: Qwen/Qwen3.5-27B
+  - draft: Qwen/Qwen3.5-4B
+    target: Qwen/Qwen3-32B
+  - draft: Qwen/Qwen3.5-9B
+    target: Qwen/Qwen3.5-27B
+  - draft: Qwen/Qwen3.5-9B
+    target: Qwen/Qwen3-32B
+
+gamma_values: [1, 2, 3, 4, 5, 7, 10]
+
+benchmark:
+  datasets:
+    - gsm8k
+    - math
+    - humaneval
+    - mmlu
+  num_samples_per_dataset: 50
+  max_new_tokens: 128
+  temperature: 1.0
+  num_runs: 3
+
+gpu:
+  draft_gpu: 0
+  total_gpus: 8
+  per_gpu_memory_gb: 80

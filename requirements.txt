@@ -1,0 +1,41 @@
+# =============================================================================
+# SpecScale — Python dependencies
+# LLM speculative decoding + DiT speculative denoising + scaling-law analysis
+# =============================================================================
+
+# --- PyTorch stack (install CUDA wheels from https://pytorch.org as needed) ---
+torch>=2.2.0
+torchvision>=0.17.0
+
+# --- Core numerics & plotting ---
+numpy>=1.24.0
+scipy>=1.11.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+tqdm>=4.66.0
+PyYAML>=6.0
+packaging>=23.0
+einops>=0.7.0
+
+# --- Hugging Face ecosystem (autoregressive LLMs) ---
+transformers>=4.40.0
+accelerate>=0.27.0
+datasets>=2.18.0
+tokenizers>=0.15.0
+safetensors>=0.4.0
+huggingface-hub>=0.23.0
+sentencepiece>=0.1.99
+protobuf>=4.21.0
+
+# --- Diffusion transformers (SpecDiff track) ---
+diffusers>=0.30.0
+
+# --- Metrics & evaluation ---
+torchmetrics>=1.3.0
+clean-fid>=0.1.35
+Pillow>=10.0.0
+scikit-learn>=1.5.0
+
+# --- Utilities ---
+requests>=2.31.0
+filelock>=3.13.0

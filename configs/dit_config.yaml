@@ -1,0 +1,86 @@
+# SpecDenoise: default experiment configuration
+# All hyperparameters for acceptance sweep, scaling law, eval, and ablations.
+
+models:
+  draft_options: ["DiT-S/2", "DiT-B/2"]
+  target_options: ["DiT-B/2", "DiT-XL/2"]
+  pairs:
+    - draft: "DiT-S/2"
+      target: "DiT-XL/2"
+      draft_params_M: 33
+      target_params_M: 675
+    - draft: "DiT-B/2"
+      target: "DiT-XL/2"
+      draft_params_M: 131
+      target_params_M: 675
+    - draft: "DiT-S/2"
+      target: "DiT-B/2"
+      draft_params_M: 33
+      target_params_M: 131
+  image_size: 256
+  num_classes: 1000
+  latent_channels: 4
+  pretrained: true
+  dtype: "float32"
+
+acceptance_sweep:
+  gamma_values: [2, 3, 5, 7, 10]
+  guidance_scales: [1.0, 4.0, 7.5]
+  timestep_bins: 6  # evenly divide [0,1] into 6 bins
+  seeds: [0, 1, 2]
+  num_samples: 100
+  batch_size: 4
+  num_inference_steps: 50
+  temperature: 1.0
+
+scaling_law:
+  h_types: ["linear", "cosine"]
+  max_gamma: 15
+  output_dir: "results/scaling_law"
+  figure_format: "pdf"
+  figure_dpi: 300
+
+imagenet_eval:
+  num_images: 50000
+  batch_size: 16
+  baselines:
+    - name: "DDIM-50"
+      solver: "ddim"
+      num_steps: 50
+    - name: "DDIM-25"
+      solver: "ddim"
+      num_steps: 25
+    - name: "DPM-Solver++-20"
+      solver: "dpmsolver++"
+      num_steps: 20
+  specdenoise:
+    - name: "SpecDenoise-fixed-γ5"
+      gamma: 5
+      adaptive: false
+    - name: "SpecDenoise-adaptive"
+      gamma: 10
+      adaptive: true
+  guidance_scale: 4.0
+  fid_reference: "imagenet_256"
+  output_dir: "results/imagenet_eval"
+
+ablations:
+  gamma_schedules: ["fixed", "adaptive", "oracle"]
+  draft_sizes: ["DiT-S/2", "DiT-B/2"]
+  guidance_scales: [1.0, 4.0, 7.5]
+  solvers: ["ddim", "dpmsolver++"]
+  noise_schedules: ["linear", "cosine"]
+  temperatures: [0.5, 1.0, 2.0]
+  composability:
+    smooth_cache: true
+  num_samples: 10000
+  batch_size: 8
+  output_dir: "results/ablations"
+
+output:
+  base_dir: "results"
+  acceptance_sweep_dir: "results/acceptance_sweep"
+  scaling_law_dir: "results/scaling_law"
+  imagenet_eval_dir: "results/imagenet_eval"
+  ablation_dir: "results/ablations"
+  figures_dir: "results/figures"
