@@ -1,0 +1,12 @@
+
+# Large experiment artifacts (use collect_results.sh to archive)
+results_archive/*.tar.gz
+checkpoints/**/*.pt
+checkpoints/**/*.bin
+checkpoints/**/*.safetensors
+outputs/**/*.pt
+*.ckpt
+__pycache__/
+.venv/
+*.egg-info/
+wandb/
