@@ -19,7 +19,7 @@
 #
 # Usage:
 #   bash scripts/run_all_experiments.sh
-#   bash scripts/run_all_experiments.sh --quick
+#   QUICK=--quick bash scripts/run_all_experiments.sh  # (dev only)
 #   bash scripts/run_all_experiments.sh --from-phase 3
 #   bash scripts/run_all_experiments.sh --only-phase 5
 #   bash scripts/run_all_experiments.sh --dry-run

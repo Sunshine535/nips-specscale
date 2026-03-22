@@ -88,10 +88,8 @@ pip install -U pip
 pip install -r requirements.txt
 # Install a CUDA build of PyTorch matching your driver from https://pytorch.org
 
-bash scripts/run_all_experiments.sh --quick
 ```
 
-**Smoke test.** `--quick` shrinks sample counts, uses **two** LLM pairs, **two** \(\gamma\) values, **two** datasets, **one** seed, and a **reduced DiT sweep** (`--sweep_mode quick_subset` inside `run_acceptance_sweep_dit.py`).
 
 **Full paper reproduction.**
 
