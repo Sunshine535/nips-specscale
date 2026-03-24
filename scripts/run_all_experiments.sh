@@ -264,10 +264,18 @@ fi
 # Phase 1 — LLM benchmark sweep
 # ===========================================================================
 if should_run_phase 1; then
-  log "######## Phase 1: LLM sweep (benchmark_speculative.py) ########"
+  log "######## Phase 1: LLM sweep (benchmark_speculative.py, ${NUM_GPUS}-GPU parallel) ########"
   OUT_LLMSW="${PROJECT_ROOT}/results/llm_sweep"
   mkdir -p "${OUT_LLMSW}"
   P1_LOG="${LOG_DIR}/phase1_llm_sweep.log"
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    log "Phase 1: per-job logs → ${LOG_DIR}/phase1_<tag>.log (aggregate pointer: ${P1_LOG})"
+    : > "${P1_LOG}"
+  fi
+
+  GPU_IDX=0
+  PIDS=()
+  LABELS=()
 
   for SEED in "${LLM_SEEDS[@]}"; do
     SEED_DIR="${OUT_LLMSW}/seed_${SEED}"
@@ -275,23 +283,47 @@ if should_run_phase 1; then
     for PAIR in "${LLM_PAIRS[@]}"; do
       DRAFT="${PAIR%%:*}"
       TARGET="${PAIR##*:}"
+      TAG="seed${SEED}_$(echo "${PAIR}" | tr '/:' '_')"
+      GPU_SLOT=$((GPU_IDX % NUM_GPUS))
+
       if [[ "${DRY_RUN}" -eq 1 ]]; then
-        log "DRY-RUN: python benchmark_speculative.py draft=${DRAFT} target=${TARGET} seed=${SEED} gammas=${LLM_GAMMAS[*]} datasets=${LLM_DATASETS[*]}"
+        log "DRY-RUN: CUDA_VISIBLE_DEVICES=${GPU_SLOT} python ${SCRIPT_DIR}/benchmark_speculative.py --draft_model ${DRAFT} --target_model ${TARGET} --gamma ${LLM_GAMMAS[*]} --datasets ${LLM_DATASETS[*]} --num_samples ${LLM_NUM_SAMPLES} --max_new_tokens ${LLM_MAX_NEW_TOKENS} --seed ${SEED} --output_dir ${SEED_DIR} ${QUICK_ARGS[*]:-}"
+        GPU_IDX=$((GPU_IDX + 1))
         continue
       fi
-      python "${SCRIPT_DIR}/benchmark_speculative.py" \
-        --draft_model "${DRAFT}" \
-        --target_model "${TARGET}" \
-        --gamma "${LLM_GAMMAS[@]}" \
-        --datasets "${LLM_DATASETS[@]}" \
-        --num_samples "${LLM_NUM_SAMPLES}" \
-        --max_new_tokens "${LLM_MAX_NEW_TOKENS}" \
-        --seed "${SEED}" \
-        --output_dir "${SEED_DIR}" \
-        "${QUICK_ARGS[@]}" \
-        2>&1 | tee -a "${P1_LOG}"
+
+      JOB_LOG="${LOG_DIR}/phase1_${TAG}.log"
+      {
+        echo "=== Phase 1 job ${TAG} (GPU ${GPU_SLOT}) started $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+        CUDA_VISIBLE_DEVICES="${GPU_SLOT}" python "${SCRIPT_DIR}/benchmark_speculative.py" \
+          --draft_model "${DRAFT}" \
+          --target_model "${TARGET}" \
+          --gamma "${LLM_GAMMAS[@]}" \
+          --datasets "${LLM_DATASETS[@]}" \
+          --num_samples "${LLM_NUM_SAMPLES}" \
+          --max_new_tokens "${LLM_MAX_NEW_TOKENS}" \
+          --seed "${SEED}" \
+          --output_dir "${SEED_DIR}" \
+          "${QUICK_ARGS[@]}"
+      } > "${JOB_LOG}" 2>&1 &
+      CHILD_PID=$!
+      PIDS+=("${CHILD_PID}")
+      LABELS+=("${TAG}")
+      echo "=== Launched ${JOB_LOG##*/} pid=${CHILD_PID} GPU=${GPU_SLOT} ===" >> "${P1_LOG}"
+
+      GPU_IDX=$((GPU_IDX + 1))
+
+      # Throttle when all GPUs have a job in flight
+      if [[ $((GPU_IDX % NUM_GPUS)) -eq 0 ]] && [[ ${#PIDS[@]} -ge ${NUM_GPUS} ]]; then
+        for pid in "${PIDS[@]}"; do wait "${pid}" || exit 1; done
+        PIDS=()
+      fi
     done
   done
+
+  if [[ "${DRY_RUN}" -eq 0 ]]; then
+    for pid in "${PIDS[@]}"; do wait "${pid}" || exit 1; done
+  fi
 fi
 
 # ===========================================================================
