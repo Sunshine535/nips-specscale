@@ -68,6 +68,12 @@ def parse_args():
     parser.add_argument("--target_device", type=str, default="cuda:0")
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--worker_id", type=int, default=0,
+                        help="Worker index for multi-GPU parallel (0-based)")
+    parser.add_argument("--num_workers", type=int, default=1,
+                        help="Total number of parallel workers")
+    parser.add_argument("--skip_existing", action="store_true",
+                        help="Skip configs whose result file already exists")
     return parser.parse_args()
 
 
@@ -245,17 +251,32 @@ def run_single_config(
 
 def save_result(result: dict, output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
-    tag = (
-        f"{result['draft_model'].replace('/', '_')}"
-        f"__{result['target_model'].replace('/', '_')}"
-        f"__g{result['gamma']}"
-        f"__cfg{result['guidance_scale']}"
-        f"__seed{result['seed']}"
-    )
+    if "error" in result and "draft_model" not in result:
+        tag = f"error__{int(time.time())}"
+    else:
+        tag = (
+            f"{result['draft_model'].replace('/', '_')}"
+            f"__{result['target_model'].replace('/', '_')}"
+            f"__g{result['gamma']}"
+            f"__cfg{result['guidance_scale']}"
+            f"__seed{result['seed']}"
+        )
     path = output_dir / f"{tag}.json"
     with open(path, "w") as f:
         json.dump(result, f, indent=2)
     logger.info("Saved: %s", path)
+
+
+def _result_file_exists(result_meta: dict, output_dir: Path) -> bool:
+    """Check if a result file already exists for this config."""
+    tag = (
+        f"{result_meta['draft'].replace('/', '_')}"
+        f"__{result_meta['target'].replace('/', '_')}"
+        f"__g{result_meta['gamma']}"
+        f"__cfg{result_meta['guidance_scale']}"
+        f"__seed{result_meta['seed']}"
+    )
+    return (output_dir / f"{tag}.json").exists()
 
 
 def main():
@@ -280,63 +301,93 @@ def main():
         cfgs = [args.guidance_scale] if args.guidance_scale else sweep_cfg.get("guidance_scales", [1.0, 4.0, 7.5])
         seeds = [args.seed] if args.seed is not None else sweep_cfg.get("seeds", [0, 1, 2])
 
-    total_configs = len(pairs) * len(gammas) * len(cfgs) * len(seeds)
-    logger.info("=" * 60)
-    logger.info("Acceptance Rate Sweep")
-    logger.info("  Model pairs: %d", len(pairs))
-    logger.info("  γ values: %s", gammas)
-    logger.info("  Guidance scales: %s", cfgs)
-    logger.info("  Seeds: %s", seeds)
-    logger.info("  Total configs: %d", total_configs)
-    logger.info("  Samples per config: %d", args.num_samples)
-    logger.info("=" * 60)
-
-    all_results = []
-    done = 0
-    sweep_start = time.time()
-
+    all_configs = []
     for pair in pairs:
         for gamma in gammas:
             for guidance_scale in cfgs:
                 for seed in seeds:
-                    done += 1
-                    logger.info(
-                        "[%d/%d] %s→%s  γ=%d  cfg=%.1f  seed=%d",
-                        done, total_configs,
-                        pair["draft"], pair["target"],
-                        gamma, guidance_scale, seed,
-                    )
+                    all_configs.append({
+                        "draft": pair["draft"], "target": pair["target"],
+                        "gamma": gamma, "guidance_scale": guidance_scale, "seed": seed,
+                    })
 
-                    result = run_single_config(
-                        draft_name=pair["draft"],
-                        target_name=pair["target"],
-                        gamma=gamma,
-                        guidance_scale=guidance_scale,
-                        seed=seed,
-                        args=args,
-                    )
+    total_configs = len(all_configs)
 
-                    save_result(result, output_dir)
-                    all_results.append(result)
+    # Multi-GPU: each worker takes a strided subset
+    my_configs = [c for i, c in enumerate(all_configs) if i % args.num_workers == args.worker_id]
 
-                    elapsed = time.time() - sweep_start
-                    eta = elapsed / done * (total_configs - done)
-                    logger.info(
-                        "  → α=%.3f | Elapsed: %.0fs | ETA: %.0fs",
-                        result.get("acceptance_rate", 0), elapsed, eta,
-                    )
+    logger.info("=" * 60)
+    logger.info("Acceptance Rate Sweep (worker %d/%d)", args.worker_id, args.num_workers)
+    logger.info("  Total configs: %d | This worker: %d", total_configs, len(my_configs))
+    logger.info("  γ values: %s", gammas)
+    logger.info("  Guidance scales: %s", cfgs)
+    logger.info("  Seeds: %s", seeds)
+    logger.info("  Samples per config: %d", args.num_samples)
+    logger.info("  Device: draft=%s target=%s", args.draft_device, args.target_device)
+    logger.info("  Skip existing: %s", args.skip_existing)
+    logger.info("=" * 60)
 
-    summary_path = output_dir / "sweep_summary.json"
+    all_results = []
+    done = 0
+    skipped = 0
+    sweep_start = time.time()
+
+    for c in my_configs:
+        done += 1
+
+        if args.skip_existing and _result_file_exists(c, output_dir):
+            skipped += 1
+            logger.info("[%d/%d] SKIP (exists) %s→%s γ=%d cfg=%.1f seed=%d",
+                        done, len(my_configs), c["draft"], c["target"],
+                        c["gamma"], c["guidance_scale"], c["seed"])
+            continue
+
+        logger.info(
+            "[%d/%d] %s→%s  γ=%d  cfg=%.1f  seed=%d",
+            done, len(my_configs),
+            c["draft"], c["target"],
+            c["gamma"], c["guidance_scale"], c["seed"],
+        )
+
+        result = run_single_config(
+            draft_name=c["draft"],
+            target_name=c["target"],
+            gamma=c["gamma"],
+            guidance_scale=c["guidance_scale"],
+            seed=c["seed"],
+            args=args,
+        )
+
+        save_result(result, output_dir)
+        all_results.append(result)
+
+        elapsed = time.time() - sweep_start
+        actual_done = done - skipped
+        if actual_done > 0:
+            remaining = len(my_configs) - done
+            eta = elapsed / actual_done * remaining
+        else:
+            eta = 0
+        logger.info(
+            "  → α=%.3f | Elapsed: %.0fs | ETA: %.0fs",
+            result.get("acceptance_rate", 0), elapsed, eta,
+        )
+
+    summary_path = output_dir / f"sweep_summary_worker{args.worker_id}.json"
     summary = {
+        "worker_id": args.worker_id,
+        "num_workers": args.num_workers,
         "total_configs": total_configs,
+        "assigned": len(my_configs),
         "completed": len(all_results),
+        "skipped": skipped,
         "errors": sum(1 for r in all_results if "error" in r),
         "total_time_seconds": time.time() - sweep_start,
         "results": all_results,
     }
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
-    logger.info("Sweep complete. Summary: %s", summary_path)
+    logger.info("Worker %d complete. Summary: %s", args.worker_id, summary_path)
 
     if all_results:
         rates = [r.get("acceptance_rate", 0) for r in all_results if "error" not in r]

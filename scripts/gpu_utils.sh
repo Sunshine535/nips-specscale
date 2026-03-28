@@ -7,13 +7,16 @@
 
 detect_gpus() {
     # Detect available NVIDIA GPUs and set environment variables
-    if ! command -v nvidia-smi &>/dev/null; then
-        echo "[ERROR] nvidia-smi not found. CUDA driver not installed?"
+    # Respect SENSECORE_ACCELERATE_DEVICE_COUNT from ACP environment
+    if [[ -n "${SENSECORE_ACCELERATE_DEVICE_COUNT:-}" ]]; then
+        export NUM_GPUS="${SENSECORE_ACCELERATE_DEVICE_COUNT}"
+    elif command -v nvidia-smi &>/dev/null; then
+        export NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+    else
+        echo "[ERROR] nvidia-smi not found and SENSECORE_ACCELERATE_DEVICE_COUNT not set."
         exit 1
     fi
-
-    export NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
-    if [ "$NUM_GPUS" -eq 0 ]; then
+    if [ "${NUM_GPUS:-0}" -eq 0 ]; then
         echo "[ERROR] No GPUs detected."
         exit 1
     fi
@@ -136,7 +139,7 @@ YAML
 
 # Common environment setup
 setup_env() {
-    export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
+    # HF_ENDPOINT removed (use default huggingface.co)
     export HF_HOME="${HF_HOME:-$HOME/.cache/huggingface}"
     export TRANSFORMERS_CACHE="${HF_HOME}/hub"
     export TOKENIZERS_PARALLELISM=false

@@ -46,22 +46,29 @@ def load_dit_models(
         "target_params_M": MODEL_CONFIGS.get(target_name, {}).get("params_M", 0),
     }
 
-    try:
-        from diffusers import DiTPipeline
-        logger.info("Loading models via diffusers DiTPipeline")
-
-        draft_model = _load_via_diffusers(draft_name, image_size, num_classes, draft_device, dtype, pretrained)
-        target_model = _load_via_diffusers(target_name, image_size, num_classes, target_device, dtype, pretrained)
-
-        return draft_model, target_model, info
-
-    except ImportError:
-        logger.info("diffusers not available, falling back to standalone DiT")
-
-    draft_model = _build_standalone_dit(draft_name, image_size, num_classes, draft_device, dtype)
-    target_model = _build_standalone_dit(target_name, image_size, num_classes, target_device, dtype)
+    draft_model = _try_load_model(draft_name, image_size, num_classes, draft_device, dtype, pretrained)
+    target_model = _try_load_model(target_name, image_size, num_classes, target_device, dtype, pretrained)
 
     return draft_model, target_model, info
+
+
+def _try_load_model(
+    model_name: str,
+    image_size: int,
+    num_classes: int,
+    device: str,
+    dtype: torch.dtype,
+    pretrained: bool,
+) -> nn.Module:
+    """Try diffusers first; fall back to standalone if unavailable or repo missing."""
+    try:
+        from diffusers import DiTPipeline  # noqa: F401
+        return _load_via_diffusers(model_name, image_size, num_classes, device, dtype, pretrained)
+    except ImportError:
+        logger.info("diffusers not installed, using standalone DiT for %s", model_name)
+    except Exception as e:
+        logger.warning("diffusers load failed for %s (%s), falling back to standalone", model_name, e)
+    return _build_standalone_dit(model_name, image_size, num_classes, device, dtype)
 
 
 def _load_via_diffusers(
@@ -113,8 +120,9 @@ def _build_standalone_dit(
     if cfg is None:
         raise ValueError(f"Unknown model: {model_name}")
 
+    latent_size = image_size // 8  # VAE 8x spatial downsample
     model = MinimalDiT(
-        input_size=image_size // cfg["patch_size"],
+        input_size=latent_size,
         patch_size=cfg["patch_size"],
         in_channels=4,  # latent channels for VAE
         hidden_size=cfg["hidden_size"],

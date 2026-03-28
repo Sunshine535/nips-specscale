@@ -59,6 +59,17 @@ export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
 export TOKENIZERS_PARALLELISM=false
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
 
+# MODEL_BASE_DIR: when set, all HF model names are resolved as local paths
+# e.g. MODEL_BASE_DIR=/data/models → "Qwen/Qwen3.5-9B" becomes "/data/models/Qwen/Qwen3.5-9B"
+_resolve_model() {
+  local name="$1"
+  if [[ -n "${MODEL_BASE_DIR:-}" ]] && [[ -d "${MODEL_BASE_DIR}/${name}" ]]; then
+    echo "${MODEL_BASE_DIR}/${name}"
+  else
+    echo "${name}"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -154,23 +165,22 @@ else
   DIT_EVAL_BATCH=16
   ABLATION_SAMPLES=10000
 
-  # Eleven draft→target pairs (size ratio coverage for S(d,T,γ) paper grid)
+  # Nine draft→target pairs using actual Qwen3.5 dense models (0.8B/2B/4B/9B/27B)
+  # Covers size ratios from 1:3.5 to 1:33.75 for S(d,T,γ) paper grid
   LLM_PAIRS=(
-    "Qwen/Qwen3.5-0.6B:Qwen/Qwen3.5-9B"
-    "Qwen/Qwen3.5-0.8B:Qwen/Qwen3.5-9B"
-    "Qwen/Qwen3.5-1.7B:Qwen/Qwen3.5-9B"
-    "Qwen/Qwen3.5-4B:Qwen/Qwen3.5-9B"
-    "Qwen/Qwen3.5-0.6B:Qwen/Qwen3.5-4B"
     "Qwen/Qwen3.5-0.8B:Qwen/Qwen3.5-4B"
-    "Qwen/Qwen3.5-1.7B:Qwen/Qwen3.5-4B"
-    "Qwen/Qwen3.5-9B:Qwen/Qwen3.5-27B"
-    "Qwen/Qwen3.5-4B:Qwen/Qwen3.5-27B"
+    "Qwen/Qwen3.5-0.8B:Qwen/Qwen3.5-9B"
     "Qwen/Qwen3.5-0.8B:Qwen/Qwen3.5-27B"
-    "Qwen/Qwen3.5-1.7B:Qwen/Qwen3.5-27B"
+    "Qwen/Qwen3.5-2B:Qwen/Qwen3.5-4B"
+    "Qwen/Qwen3.5-2B:Qwen/Qwen3.5-9B"
+    "Qwen/Qwen3.5-2B:Qwen/Qwen3.5-27B"
+    "Qwen/Qwen3.5-4B:Qwen/Qwen3.5-9B"
+    "Qwen/Qwen3.5-4B:Qwen/Qwen3.5-27B"
+    "Qwen/Qwen3.5-9B:Qwen/Qwen3.5-27B"
   )
   LLM_GAMMAS=(2 3 4 5 6 7 8)
-  LLM_DATASETS=(gsm8k math humaneval_plus mmlu)
-  LLM_SEEDS=(0 1 2)
+  LLM_DATASETS=(gsm8k math)
+  LLM_SEEDS=(0)
 
   DIT_SWEEP_LABEL="full_paper_grid"
 fi
@@ -185,21 +195,24 @@ log "  Quick        : ${QUICK:-no}"
 log "  From phase   : ${FROM_PHASE}"
 log "  Only phase   : $([[ ${ONLY_PHASE} -ge 0 ]] && echo "${ONLY_PHASE}" || echo all)"
 log "  Dry-run      : ${DRY_RUN}"
+log "  Model base   : ${MODEL_BASE_DIR:-<hub>}"
 log "  Log file     : ${PIPELINE_LOG}"
 log "=============================================================="
 
 # ===========================================================================
-# Phase 0 — Download LLM + DiT weights
+# Phase 0 — Download LLM + DiT weights (skip if MODEL_BASE_DIR is set)
 # ===========================================================================
 if should_run_phase 0; then
   log "######## Phase 0: download models (LLM pairs + DiT) ########"
   P0_LOG="${LOG_DIR}/phase0_download.log"
 
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
+  if [[ -n "${MODEL_BASE_DIR:-}" ]]; then
+    log "MODEL_BASE_DIR is set (${MODEL_BASE_DIR}), skipping download — using local models."
+  elif [[ "${DRY_RUN}" -eq 1 ]]; then
     log "DRY-RUN: Phase 0 — would download Qwen3.5 family + facebook/DiT-*-2-256 checkpoints"
   elif [[ -f "${SCRIPT_DIR}/download_models.py" ]]; then
     python "${SCRIPT_DIR}/download_models.py" \
-      --llm_models Qwen/Qwen3.5-0.6B Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-1.7B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B Qwen/Qwen3.5-27B \
+      --llm_models Qwen/Qwen3.5-0.8B Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B Qwen/Qwen3.5-27B \
       --dit_models facebook/DiT-XL-2-256 facebook/DiT-L-2-256 facebook/DiT-B-2-256 facebook/DiT-S-2-256 \
       "${QUICK_ARGS[@]}" \
       2>&1 | tee -a "${P0_LOG}"
@@ -214,7 +227,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("phase0")
 
 llms = [
-    "Qwen/Qwen3.5-0.6B", "Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-1.7B",
+    "Qwen/Qwen3.5-0.8B", "Qwen/Qwen3.5-2B",
     "Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-9B", "Qwen/Qwen3.5-27B",
 ]
 
@@ -261,7 +274,7 @@ PY
 fi
 
 # ===========================================================================
-# Phase 1 — LLM benchmark sweep
+# Phase 1 — LLM benchmark sweep (GPU-slot scheduler: fill all GPUs, never idle)
 # ===========================================================================
 if should_run_phase 1; then
   log "######## Phase 1: LLM sweep (benchmark_speculative.py, ${NUM_GPUS}-GPU parallel) ########"
@@ -269,33 +282,44 @@ if should_run_phase 1; then
   mkdir -p "${OUT_LLMSW}"
   P1_LOG="${LOG_DIR}/phase1_llm_sweep.log"
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    log "Phase 1: per-job logs → ${LOG_DIR}/phase1_<tag>.log (aggregate pointer: ${P1_LOG})"
+    log "Phase 1: per-job logs → ${LOG_DIR}/phase1_<tag>.log"
     : > "${P1_LOG}"
   fi
 
-  GPU_IDX=0
-  PIDS=()
-  LABELS=()
+  GPU_SLOT_DIR=$(mktemp -d)
+  trap "rm -rf ${GPU_SLOT_DIR}" EXIT
+
+  P1_PIDS=()
+  P1_FAIL=0
 
   for SEED in "${LLM_SEEDS[@]}"; do
     SEED_DIR="${OUT_LLMSW}/seed_${SEED}"
     mkdir -p "${SEED_DIR}"
     for PAIR in "${LLM_PAIRS[@]}"; do
-      DRAFT="${PAIR%%:*}"
-      TARGET="${PAIR##*:}"
+      DRAFT="$(_resolve_model "${PAIR%%:*}")"
+      TARGET="$(_resolve_model "${PAIR##*:}")"
       TAG="seed${SEED}_$(echo "${PAIR}" | tr '/:' '_')"
-      GPU_SLOT=$((GPU_IDX % NUM_GPUS))
 
       if [[ "${DRY_RUN}" -eq 1 ]]; then
-        log "DRY-RUN: CUDA_VISIBLE_DEVICES=${GPU_SLOT} python ${SCRIPT_DIR}/benchmark_speculative.py --draft_model ${DRAFT} --target_model ${TARGET} --gamma ${LLM_GAMMAS[*]} --datasets ${LLM_DATASETS[*]} --num_samples ${LLM_NUM_SAMPLES} --max_new_tokens ${LLM_MAX_NEW_TOKENS} --seed ${SEED} --output_dir ${SEED_DIR} ${QUICK_ARGS[*]:-}"
-        GPU_IDX=$((GPU_IDX + 1))
+        log "DRY-RUN: python benchmark_speculative.py --draft_model ${DRAFT} --target_model ${TARGET} --gamma ${LLM_GAMMAS[*]} --datasets ${LLM_DATASETS[*]} --num_samples ${LLM_NUM_SAMPLES} --max_new_tokens ${LLM_MAX_NEW_TOKENS} --seed ${SEED} --output_dir ${SEED_DIR} ${QUICK_ARGS[*]:-}"
         continue
       fi
 
       JOB_LOG="${LOG_DIR}/phase1_${TAG}.log"
-      {
-        echo "=== Phase 1 job ${TAG} (GPU ${GPU_SLOT}) started $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
-        CUDA_VISIBLE_DEVICES="${GPU_SLOT}" python "${SCRIPT_DIR}/benchmark_speculative.py" \
+      (
+        # Acquire a free GPU slot (spin until one is available)
+        GPU=-1
+        while true; do
+          for (( g=0; g<NUM_GPUS; g++ )); do
+            if mkdir "${GPU_SLOT_DIR}/gpu_${g}" 2>/dev/null; then
+              GPU=$g; break 2
+            fi
+          done
+          sleep 1
+        done
+
+        echo "=== Phase 1 job ${TAG} (GPU ${GPU}) started $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+        CUDA_VISIBLE_DEVICES="${GPU}" python "${SCRIPT_DIR}/benchmark_speculative.py" \
           --draft_model "${DRAFT}" \
           --target_model "${TARGET}" \
           --gamma "${LLM_GAMMAS[@]}" \
@@ -305,24 +329,37 @@ if should_run_phase 1; then
           --seed "${SEED}" \
           --output_dir "${SEED_DIR}" \
           "${QUICK_ARGS[@]}"
-      } > "${JOB_LOG}" 2>&1 &
+        RC=$?
+        echo "=== Phase 1 job ${TAG} (GPU ${GPU}) finished rc=${RC} $(date -u '+%Y-%m-%dT%H:%M:%SZ') ==="
+
+        rmdir "${GPU_SLOT_DIR}/gpu_${GPU}"
+        exit ${RC}
+      ) > "${JOB_LOG}" 2>&1 &
+
       CHILD_PID=$!
-      PIDS+=("${CHILD_PID}")
-      LABELS+=("${TAG}")
-      echo "=== Launched ${JOB_LOG##*/} pid=${CHILD_PID} GPU=${GPU_SLOT} ===" >> "${P1_LOG}"
+      P1_PIDS+=("${CHILD_PID}")
+      echo "=== Queued ${TAG} pid=${CHILD_PID} ===" >> "${P1_LOG}"
+      log "  Queued ${TAG} (pid ${CHILD_PID})"
 
-      GPU_IDX=$((GPU_IDX + 1))
-
-      # Throttle when all GPUs have a job in flight
-      if [[ $((GPU_IDX % NUM_GPUS)) -eq 0 ]] && [[ ${#PIDS[@]} -ge ${NUM_GPUS} ]]; then
-        for pid in "${PIDS[@]}"; do wait "${pid}" || exit 1; done
-        PIDS=()
-      fi
+      sleep 0.5
     done
   done
 
   if [[ "${DRY_RUN}" -eq 0 ]]; then
-    for pid in "${PIDS[@]}"; do wait "${pid}" || exit 1; done
+    log "Phase 1: ${#P1_PIDS[@]} jobs queued across ${NUM_GPUS} GPUs, waiting..."
+    for pid in "${P1_PIDS[@]}"; do
+      if ! wait "${pid}"; then
+        log "WARNING: Phase 1 job pid=${pid} failed"
+        P1_FAIL=$((P1_FAIL + 1))
+      fi
+    done
+    rm -rf "${GPU_SLOT_DIR}"
+    trap - EXIT
+    if [[ ${P1_FAIL} -gt 0 ]]; then
+      log "ERROR: ${P1_FAIL}/${#P1_PIDS[@]} Phase 1 jobs failed"
+      exit 1
+    fi
+    log "Phase 1 complete: all ${#P1_PIDS[@]} jobs succeeded"
   fi
 fi
 
@@ -338,31 +375,51 @@ if should_run_phase 2; then
     python "${SCRIPT_DIR}/run_scaling_law_llm.py" \
       --results_dir "${PROJECT_ROOT}/results/llm_sweep" \
       --output_dir "${PROJECT_ROOT}/results/llm_scaling" \
-      --figure_format pdf \
-      --figure_dpi 300 \
-      "${QUICK_ARGS[@]}" \
       2>&1 | tee -a "${LOG_DIR}/phase2_llm_scaling.log"
   fi
 fi
 
 # ===========================================================================
-# Phase 3 — DiT acceptance sweep (3×5×3×3 full grid via --full_sweep)
+# Phase 3 — DiT acceptance sweep (3×5×3×3 full grid, multi-GPU parallel)
 # ===========================================================================
 if should_run_phase 3; then
-  log "######## Phase 3: DiT acceptance (run_acceptance_sweep_dit.py) ########"
+  log "######## Phase 3: DiT acceptance (${NUM_GPUS}-GPU parallel) ########"
   mkdir -p "${PROJECT_ROOT}/results/dit_acceptance"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    log "DRY-RUN: python run_acceptance_sweep_dit.py --full_sweep sweep=${DIT_SWEEP_LABEL} samples=${DIT_SWEEP_SAMPLES}"
+    log "DRY-RUN: python run_acceptance_sweep_dit.py --full_sweep ×${NUM_GPUS} workers"
   else
-    python "${SCRIPT_DIR}/run_acceptance_sweep_dit.py" \
-      --full_sweep \
-      --sweep_mode "${DIT_SWEEP_LABEL}" \
-      --num_samples "${DIT_SWEEP_SAMPLES}" \
-      --batch_size 4 \
-      --output_dir "${PROJECT_ROOT}/results/dit_acceptance" \
-      --config "${PROJECT_ROOT}/configs/default.yaml" \
-      "${QUICK_ARGS[@]}" \
-      2>&1 | tee -a "${LOG_DIR}/phase3_dit_acceptance.log"
+    P3_PIDS=()
+    P3_FAIL=0
+    for (( gpu=0; gpu<NUM_GPUS; gpu++ )); do
+      (
+        CUDA_VISIBLE_DEVICES="${gpu}" python "${SCRIPT_DIR}/run_acceptance_sweep_dit.py" \
+          --full_sweep \
+          --num_samples "${DIT_SWEEP_SAMPLES}" \
+          --batch_size 4 \
+          --output_dir "${PROJECT_ROOT}/results/dit_acceptance" \
+          --config "${PROJECT_ROOT}/configs/default.yaml" \
+          --draft_device cuda:0 \
+          --target_device cuda:0 \
+          --worker_id "${gpu}" \
+          --num_workers "${NUM_GPUS}" \
+          --skip_existing
+      ) > "${LOG_DIR}/phase3_dit_gpu${gpu}.log" 2>&1 &
+      P3_PIDS+=($!)
+      log "  Phase 3 worker ${gpu} started (pid ${P3_PIDS[-1]})"
+    done
+
+    log "Phase 3: ${#P3_PIDS[@]} workers running across ${NUM_GPUS} GPUs, waiting..."
+    for pid in "${P3_PIDS[@]}"; do
+      if ! wait "${pid}"; then
+        log "WARNING: Phase 3 worker pid=${pid} failed"
+        P3_FAIL=$((P3_FAIL + 1))
+      fi
+    done
+    if [[ ${P3_FAIL} -gt 0 ]]; then
+      log "ERROR: ${P3_FAIL}/${#P3_PIDS[@]} Phase 3 workers failed (continuing)"
+    else
+      log "Phase 3 complete: all ${#P3_PIDS[@]} workers succeeded"
+    fi
   fi
 fi
 
@@ -378,9 +435,7 @@ if should_run_phase 4; then
     python "${SCRIPT_DIR}/run_scaling_law_dit.py" \
       --input_dir "${PROJECT_ROOT}/results/dit_acceptance" \
       --output_dir "${PROJECT_ROOT}/results/dit_scaling" \
-      --fit_ht_modulation \
       --figure_format pdf \
-      "${QUICK_ARGS[@]}" \
       2>&1 | tee -a "${LOG_DIR}/phase4_dit_scaling.log"
   fi
 fi
@@ -395,56 +450,149 @@ if should_run_phase 5; then
     log "DRY-RUN: python run_unified_comparison.py (LLM + DiT scaling dirs)"
   else
     python "${SCRIPT_DIR}/run_unified_comparison.py" \
-      --llm_scaling_dir "${PROJECT_ROOT}/results/llm_scaling" \
-      --dit_scaling_dir "${PROJECT_ROOT}/results/dit_scaling" \
-      --llm_sweep_dir "${PROJECT_ROOT}/results/llm_sweep" \
-      --dit_acceptance_dir "${PROJECT_ROOT}/results/dit_acceptance" \
+      --llm_results_dir "${PROJECT_ROOT}/results/llm_scaling" \
+      --dit_results_dir "${PROJECT_ROOT}/results/dit_scaling" \
       --output_dir "${PROJECT_ROOT}/results/unified" \
-      "${QUICK_ARGS[@]}" \
       2>&1 | tee -a "${LOG_DIR}/phase5_unified.log"
   fi
 fi
 
 # ===========================================================================
-# Phase 6 — ImageNet FID-50K
+# Phase 6 — ImageNet FID-50K (parallel: baselines + specdenoise on separate GPUs)
 # ===========================================================================
 if should_run_phase 6; then
-  log "######## Phase 6: ImageNet eval (run_imagenet_eval.py) ########"
+  log "######## Phase 6: ImageNet eval (multi-GPU parallel) ########"
   mkdir -p "${PROJECT_ROOT}/results/imagenet_eval"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    log "DRY-RUN: python run_imagenet_eval.py --num_images ${DIT_EVAL_IMAGES}"
+    log "DRY-RUN: python run_imagenet_eval.py --num_images ${DIT_EVAL_IMAGES} ×5 configs"
   else
-    python "${SCRIPT_DIR}/run_imagenet_eval.py" \
-      --full_eval \
-      --num_images "${DIT_EVAL_IMAGES}" \
-      --batch_size "${DIT_EVAL_BATCH}" \
-      --resolution 256 \
-      --draft_model "DiT-S/2" \
-      --target_model "DiT-XL/2" \
-      --guidance_scale 4.0 \
-      --seed 42 \
-      --output_dir "${PROJECT_ROOT}/results/imagenet_eval" \
-      --config "${PROJECT_ROOT}/configs/default.yaml" \
-      "${QUICK_ARGS[@]}" \
-      2>&1 | tee -a "${LOG_DIR}/phase6_imagenet_fid.log"
+    P6_PIDS=()
+    P6_FAIL=0
+
+    P6_COMMON=(
+      --num_images "${DIT_EVAL_IMAGES}"
+      --batch_size "${DIT_EVAL_BATCH}"
+      --image_size 256
+      --target_model "DiT-XL/2"
+      --guidance_scale 4.0
+      --seed 42
+      --output_dir "${PROJECT_ROOT}/results/imagenet_eval"
+      --config "${PROJECT_ROOT}/configs/default.yaml"
+    )
+
+    # 3 baselines on GPUs 0-2
+    gpu=0
+    for steps in 50 25 20; do
+      solver="ddim"
+      [[ ${steps} -eq 20 ]] && solver="dpmsolver++"
+      (
+        CUDA_VISIBLE_DEVICES="${gpu}" python "${SCRIPT_DIR}/run_imagenet_eval.py" \
+          --method baseline --solver "${solver}" --num_steps "${steps}" \
+          --draft_device cuda:0 --target_device cuda:0 \
+          "${P6_COMMON[@]}"
+      ) > "${LOG_DIR}/phase6_baseline_${solver}_${steps}.log" 2>&1 &
+      P6_PIDS+=($!)
+      log "  Phase 6 baseline ${solver}-${steps} on GPU ${gpu} (pid ${P6_PIDS[-1]})"
+      gpu=$((gpu + 1))
+    done
+
+    # 2 SpecDenoise configs on GPUs 3-4
+    for gamma_spec in "5:false" "10:true"; do
+      g="${gamma_spec%%:*}"
+      adaptive="${gamma_spec##*:}"
+      adaptive_flag=""
+      [[ "${adaptive}" == "true" ]] && adaptive_flag="--adaptive_gamma"
+      (
+        CUDA_VISIBLE_DEVICES="${gpu}" python "${SCRIPT_DIR}/run_imagenet_eval.py" \
+          --method specdenoise --draft_model "DiT-S/2" \
+          --gamma "${g}" ${adaptive_flag} \
+          --draft_device cuda:0 --target_device cuda:0 \
+          "${P6_COMMON[@]}"
+      ) > "${LOG_DIR}/phase6_specdenoise_g${g}.log" 2>&1 &
+      P6_PIDS+=($!)
+      log "  Phase 6 specdenoise γ=${g} on GPU ${gpu} (pid ${P6_PIDS[-1]})"
+      gpu=$((gpu + 1))
+    done
+
+    log "Phase 6: ${#P6_PIDS[@]} eval configs across ${gpu} GPUs, waiting..."
+    for pid in "${P6_PIDS[@]}"; do
+      if ! wait "${pid}"; then
+        log "WARNING: Phase 6 pid=${pid} failed"
+        P6_FAIL=$((P6_FAIL + 1))
+      fi
+    done
+    if [[ ${P6_FAIL} -gt 0 ]]; then
+      log "ERROR: ${P6_FAIL}/${#P6_PIDS[@]} Phase 6 jobs failed (continuing)"
+    else
+      log "Phase 6 complete: all ${#P6_PIDS[@]} eval configs succeeded"
+    fi
   fi
 fi
 
 # ===========================================================================
-# Phase 7 — Ablations
+# Phase 7 — Ablations (6 configs across 6 GPUs in parallel)
 # ===========================================================================
 if should_run_phase 7; then
-  log "######## Phase 7: ablations (run_ablations.sh) ########"
+  log "######## Phase 7: ablations (multi-GPU parallel) ########"
+  ABL_DIR="${PROJECT_ROOT}/results/ablations"
+  ABL_CONFIG="${PROJECT_ROOT}/configs/default.yaml"
+  mkdir -p "${ABL_DIR}"
+
   if [[ "${DRY_RUN}" -eq 1 ]]; then
-    log "DRY-RUN: bash scripts/run_ablations.sh --num_samples ${ABLATION_SAMPLES} ${QUICK}"
-  elif [[ -f "${SCRIPT_DIR}/run_ablations.sh" ]]; then
-    bash "${SCRIPT_DIR}/run_ablations.sh" \
-      --output_dir "${PROJECT_ROOT}/results/ablations" \
-      --num_samples "${ABLATION_SAMPLES}" \
-      "${QUICK}" \
-      2>&1 | tee -a "${LOG_DIR}/phase7_ablations.log"
+    log "DRY-RUN: 6 ablation configs in parallel across GPUs"
   else
-    log "WARNING: scripts/run_ablations.sh not found; skipping Phase 7."
+    P7_PIDS=()
+    P7_FAIL=0
+    gpu=0
+
+    # Ablation 1: γ schedule comparison
+    (
+      CUDA_VISIBLE_DEVICES="${gpu}" python "${SCRIPT_DIR}/run_acceptance_sweep_dit.py" \
+        --output_dir "${ABL_DIR}/gamma_schedules" \
+        --config "${ABL_CONFIG}" \
+        --num_samples "${ABLATION_SAMPLES}" \
+        --draft_device cuda:0 --target_device cuda:0
+    ) > "${LOG_DIR}/phase7_gamma_sched.log" 2>&1 &
+    P7_PIDS+=($!); log "  Ablation: γ schedules on GPU ${gpu}"; gpu=$((gpu+1))
+
+    # Ablation 2-4: Temperature sensitivity (0.5, 1.0, 2.0)
+    for temp in 0.5 1.0 2.0; do
+      (
+        CUDA_VISIBLE_DEVICES="${gpu}" python "${SCRIPT_DIR}/run_acceptance_sweep_dit.py" \
+          --output_dir "${ABL_DIR}/temperature_${temp}" \
+          --config "${ABL_CONFIG}" \
+          --num_samples "${ABLATION_SAMPLES}" \
+          --temperature "${temp}" \
+          --draft_device cuda:0 --target_device cuda:0
+      ) > "${LOG_DIR}/phase7_temp_${temp}.log" 2>&1 &
+      P7_PIDS+=($!); log "  Ablation: temp=${temp} on GPU ${gpu}"; gpu=$((gpu+1))
+    done
+
+    # Ablation 5-6: Noise schedules (linear, cosine)
+    for sched in linear cosine; do
+      (
+        CUDA_VISIBLE_DEVICES="${gpu}" python "${SCRIPT_DIR}/run_acceptance_sweep_dit.py" \
+          --output_dir "${ABL_DIR}/noise_${sched}" \
+          --config "${ABL_CONFIG}" \
+          --num_samples "${ABLATION_SAMPLES}" \
+          --noise_schedule "${sched}" \
+          --draft_device cuda:0 --target_device cuda:0
+      ) > "${LOG_DIR}/phase7_noise_${sched}.log" 2>&1 &
+      P7_PIDS+=($!); log "  Ablation: noise=${sched} on GPU ${gpu}"; gpu=$((gpu+1))
+    done
+
+    log "Phase 7: ${#P7_PIDS[@]} ablations across ${gpu} GPUs, waiting..."
+    for pid in "${P7_PIDS[@]}"; do
+      if ! wait "${pid}"; then
+        log "WARNING: Phase 7 pid=${pid} failed"
+        P7_FAIL=$((P7_FAIL + 1))
+      fi
+    done
+    if [[ ${P7_FAIL} -gt 0 ]]; then
+      log "ERROR: ${P7_FAIL}/${#P7_PIDS[@]} Phase 7 ablations failed (continuing)"
+    else
+      log "Phase 7 complete: all ${#P7_PIDS[@]} ablations succeeded"
+    fi
   fi
 fi
 

@@ -34,7 +34,6 @@ uv pip install "torch==2.10.0" "torchvision" "torchaudio" \
 # --- Install project dependencies (alibaba mirror) ---
 echo "[4/5] Installing project dependencies ..."
 uv pip install -r "$PROJ_DIR/requirements.txt" \
-    --index-url https://mirrors.aliyun.com/pypi/simple/ \
     --extra-index-url https://download.pytorch.org/whl/cu128 \
     --index-strategy unsafe-best-match
 

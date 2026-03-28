@@ -399,6 +399,7 @@ class SpeculativeDenoiser:
     ) -> torch.Tensor:
         """Predict noise ε(x_t, t) with optional CFG."""
         x = x.to(device)
+        in_channels = x.shape[1]
         t_input = t.expand(x.shape[0]).to(device) if t.dim() == 0 else t.to(device)
 
         if guidance_scale > 1.0 and class_labels is not None:
@@ -410,6 +411,8 @@ class SpeculativeDenoiser:
             eps_double = model(x_double, t_double, labels_double)
             if hasattr(eps_double, "sample"):
                 eps_double = eps_double.sample
+            if eps_double.shape[1] == 2 * in_channels:
+                eps_double, _ = eps_double.chunk(2, dim=1)
             eps_cond, eps_uncond = eps_double.chunk(2, dim=0)
             eps = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
         else:
@@ -419,6 +422,8 @@ class SpeculativeDenoiser:
                 eps = model(x, t_input)
             if hasattr(eps, "sample"):
                 eps = eps.sample
+            if eps.shape[1] == 2 * in_channels:
+                eps, _ = eps.chunk(2, dim=1)
 
         return eps
 

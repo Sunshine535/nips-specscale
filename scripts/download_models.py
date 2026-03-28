@@ -56,7 +56,6 @@ def main():
     parser.add_argument("--quick", action="store_true")
     args = parser.parse_args()
 
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
     if args.llm_models:
         log.info("=== Downloading LLM models ===")

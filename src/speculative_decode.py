@@ -78,17 +78,30 @@ class SpeculativeOutput:
 
 
 def _trim_kv_cache(past: Any, keep_length: int) -> Any:
-    """Trim a KV cache to only retain the first `keep_length` positions."""
+    """Trim a KV cache to only retain the first `keep_length` positions.
+
+    Handles DynamicCache, HybridCache (Qwen3.5 etc.), SlidingWindowCache,
+    and legacy tuple-of-tuples format.
+    """
     if past is None:
         return None
+    if hasattr(past, "crop"):
+        past.crop(keep_length)
+        return past
     if isinstance(past, tuple):
         return tuple(
-            tuple(t[:, :, :keep_length, :] for t in layer) for layer in past
+            tuple(
+                t[:, :, :keep_length, :] if t is not None else None
+                for t in layer
+            )
+            for layer in past
         )
     if hasattr(past, "key_cache") and hasattr(past, "value_cache"):
         for i in range(len(past.key_cache)):
-            past.key_cache[i] = past.key_cache[i][:, :, :keep_length, :]
-            past.value_cache[i] = past.value_cache[i][:, :, :keep_length, :]
+            if past.key_cache[i] is not None:
+                past.key_cache[i] = past.key_cache[i][:, :, :keep_length, :]
+            if past.value_cache[i] is not None:
+                past.value_cache[i] = past.value_cache[i][:, :, :keep_length, :]
         return past
     raise TypeError(f"Unsupported KV cache type: {type(past)}")
 
