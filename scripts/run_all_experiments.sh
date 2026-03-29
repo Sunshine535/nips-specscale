@@ -46,6 +46,18 @@ else
 fi
 
 auto_setup
+TORCHRUN=$(get_torchrun_cmd)
+
+PHASE_MARKER_DIR="$PROJECT_ROOT/results/.phase_markers"
+mkdir -p "$PHASE_MARKER_DIR"
+FORCE_RERUN="${FORCE_RERUN:-0}"
+
+phase_done() { touch "$PHASE_MARKER_DIR/phase_${1}.done"; echo "[PHASE $1] Completed at $(date)"; }
+is_phase_done() {
+    [[ "$FORCE_RERUN" == "1" ]] && return 1
+    [[ -f "$PHASE_MARKER_DIR/phase_${1}.done" ]] && echo "[PHASE $1] Already completed. Skipping. (FORCE_RERUN=1 to override)" && return 0
+    return 1
+}
 
 # --- Activate project virtualenv (expected: setup.sh → .venv) ---
 if [[ -f "$PROJECT_ROOT/.venv/bin/activate" ]]; then
@@ -202,7 +214,7 @@ log "=============================================================="
 # ===========================================================================
 # Phase 0 — Download LLM + DiT weights (skip if MODEL_BASE_DIR is set)
 # ===========================================================================
-if should_run_phase 0; then
+if should_run_phase 0 && ! is_phase_done 0; then
   log "######## Phase 0: download models (LLM pairs + DiT) ########"
   P0_LOG="${LOG_DIR}/phase0_download.log"
 
@@ -271,12 +283,13 @@ except Exception as e:
 log.info("Phase 0 complete.")
 PY
   fi
+  phase_done 0
 fi
 
 # ===========================================================================
 # Phase 1 — LLM benchmark sweep (GPU-slot scheduler: fill all GPUs, never idle)
 # ===========================================================================
-if should_run_phase 1; then
+if should_run_phase 1 && ! is_phase_done 1; then
   log "######## Phase 1: LLM sweep (benchmark_speculative.py, ${NUM_GPUS}-GPU parallel) ########"
   OUT_LLMSW="${PROJECT_ROOT}/results/llm_sweep"
   mkdir -p "${OUT_LLMSW}"
@@ -361,12 +374,13 @@ if should_run_phase 1; then
     fi
     log "Phase 1 complete: all ${#P1_PIDS[@]} jobs succeeded"
   fi
+  phase_done 1
 fi
 
 # ===========================================================================
 # Phase 2 — LLM scaling law
 # ===========================================================================
-if should_run_phase 2; then
+if should_run_phase 2 && ! is_phase_done 2; then
   log "######## Phase 2: LLM scaling law (run_scaling_law_llm.py) ########"
   mkdir -p "${PROJECT_ROOT}/results/llm_scaling"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -377,12 +391,13 @@ if should_run_phase 2; then
       --output_dir "${PROJECT_ROOT}/results/llm_scaling" \
       2>&1 | tee -a "${LOG_DIR}/phase2_llm_scaling.log"
   fi
+  phase_done 2
 fi
 
 # ===========================================================================
 # Phase 3 — DiT acceptance sweep (3×5×3×3 full grid, multi-GPU parallel)
 # ===========================================================================
-if should_run_phase 3; then
+if should_run_phase 3 && ! is_phase_done 3; then
   log "######## Phase 3: DiT acceptance (${NUM_GPUS}-GPU parallel) ########"
   mkdir -p "${PROJECT_ROOT}/results/dit_acceptance"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -421,12 +436,13 @@ if should_run_phase 3; then
       log "Phase 3 complete: all ${#P3_PIDS[@]} workers succeeded"
     fi
   fi
+  phase_done 3
 fi
 
 # ===========================================================================
 # Phase 4 — DiT scaling law + h(t)
 # ===========================================================================
-if should_run_phase 4; then
+if should_run_phase 4 && ! is_phase_done 4; then
   log "######## Phase 4: DiT scaling law (run_scaling_law_dit.py) ########"
   mkdir -p "${PROJECT_ROOT}/results/dit_scaling"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -438,12 +454,13 @@ if should_run_phase 4; then
       --figure_format pdf \
       2>&1 | tee -a "${LOG_DIR}/phase4_dit_scaling.log"
   fi
+  phase_done 4
 fi
 
 # ===========================================================================
 # Phase 5 — Unified cross-modality analysis
 # ===========================================================================
-if should_run_phase 5; then
+if should_run_phase 5 && ! is_phase_done 5; then
   log "######## Phase 5: unified comparison (run_unified_comparison.py) ########"
   mkdir -p "${PROJECT_ROOT}/results/unified"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -455,12 +472,13 @@ if should_run_phase 5; then
       --output_dir "${PROJECT_ROOT}/results/unified" \
       2>&1 | tee -a "${LOG_DIR}/phase5_unified.log"
   fi
+  phase_done 5
 fi
 
 # ===========================================================================
 # Phase 6 — ImageNet FID-50K (parallel: baselines + specdenoise on separate GPUs)
 # ===========================================================================
-if should_run_phase 6; then
+if should_run_phase 6 && ! is_phase_done 6; then
   log "######## Phase 6: ImageNet eval (multi-GPU parallel) ########"
   mkdir -p "${PROJECT_ROOT}/results/imagenet_eval"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -527,12 +545,13 @@ if should_run_phase 6; then
       log "Phase 6 complete: all ${#P6_PIDS[@]} eval configs succeeded"
     fi
   fi
+  phase_done 6
 fi
 
 # ===========================================================================
 # Phase 7 — Ablations (6 configs across 6 GPUs in parallel)
 # ===========================================================================
-if should_run_phase 7; then
+if should_run_phase 7 && ! is_phase_done 7; then
   log "######## Phase 7: ablations (multi-GPU parallel) ########"
   ABL_DIR="${PROJECT_ROOT}/results/ablations"
   ABL_CONFIG="${PROJECT_ROOT}/configs/default.yaml"
@@ -594,12 +613,13 @@ if should_run_phase 7; then
       log "Phase 7 complete: all ${#P7_PIDS[@]} ablations succeeded"
     fi
   fi
+  phase_done 7
 fi
 
 # ===========================================================================
 # Phase 8 — Final figures + tables
 # ===========================================================================
-if should_run_phase 8; then
+if should_run_phase 8 && ! is_phase_done 8; then
   log "######## Phase 8: paper figures + tables ########"
   mkdir -p "${PROJECT_ROOT}/results/final/figures"
   if [[ "${DRY_RUN}" -eq 1 ]]; then
@@ -615,6 +635,7 @@ if should_run_phase 8; then
       "${QUICK_ARGS[@]}" \
       2>&1 | tee -a "${LOG_DIR}/phase8_final_figures.log"
   fi
+  phase_done 8
 fi
 
 log "=============================================================="
